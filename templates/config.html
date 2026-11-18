@@ -1,0 +1,548 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><title>Конфигурация {{ version }}</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script></head>
+<body class="bg-light"><div class="container-fluid py-3 px-4">
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4>⚙️ Конфигурация <span class="badge bg-primary">{{ version }}</span></h4>
+  <a href="/" class="btn btn-outline-dark btn-sm">← На дашборд</a>
+</div>
+<div class="row g-3"><div class="col-12"><div class="card"><div class="card-header bg-dark text-white">📡 Мониторинг и Шаблоны проверок</div><div class="card-body">
+  <form action="/monitor/settings" method="post" class="row g-2 align-items-end mb-3 pb-3 border-bottom">
+    <div class="col-md-3"><div class="form-check form-switch">
+      <input class="form-check-input" type="checkbox" name="enabled" id="monEn" {% if mon_settings.enabled %}checked{% endif %}>
+      <label class="form-check-label fw-bold small" for="monEn">Включить тиковый опрос</label>
+    </div></div>
+    <div class="col-md-6">
+      <label class="small text-muted">Шаблон по умолчанию для новых активных IP</label>
+      <select name="default_template_id" class="form-select form-select-sm">
+        <option value="">-- Не назначать автоматически --</option>
+        {% for t in mon_templates %}<option value="{{ t.id }}" {% if mon_settings.default_template_id==t.id %}selected{% endif %}>{{ t.name }} ({{ t.checks }})</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><button class="btn btn-primary btn-sm w-100">Сохранить настройки</button></div>
+  </form>
+
+  <div class="fw-bold small mb-2">1. Шаблоны проверок (адаптивные таймеры для Online и Fail)</div>
+  <form action="/monitor/template/add" method="post" class="row g-1 mb-2">
+    <div class="col-md-2"><input name="name" class="form-control form-control-sm" placeholder="Имя (Template-A)" required></div>
+    <div class="col-md-4"><input name="checks" class="form-control form-control-sm" placeholder="ICMP, TCP:80, TCP:443" required></div>
+    <div class="col-md-2"><input type="number" min="1" name="interval_ok" value="60" class="form-control form-control-sm" title="Интервал при Online (сек)" placeholder="OK сек"></div>
+    <div class="col-md-2"><input type="number" min="1" name="interval_fail" value="5" class="form-control form-control-sm" title="Интервал при Fail (сек)" placeholder="Fail сек"></div>
+    <div class="col-md-1"><input type="number" step="0.1" min="0.3" name="timeout_sec" value="1.5" class="form-control form-control-sm" title="Таймаут (сек)"></div>
+    <div class="col-md-1"><button class="btn btn-success btn-sm w-100">+</button></div>
+  </form>
+
+  <table class="table table-sm small mb-4">
+    <thead><tr><th>Шаблон</th><th>Проверки</th><th>Online (сек)</th><th>Fail (сек)</th><th>Таймаут</th><th></th></tr></thead>
+    <tbody>{% for t in mon_templates %}
+      <tr id="row-montpl-{{ t.id }}">
+        <td><strong>{{ t.name }}</strong></td>
+        <td><code>{{ t.checks }}</code></td>
+        <td>{{ t.interval_ok }}с</td>
+        <td>{{ t.interval_fail }}с</td>
+        <td>{{ t.timeout_sec }}с</td>
+        <td class="text-end" style="white-space:nowrap">
+          <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-1" data-bs-toggle="modal" data-bs-target="#emtpl{{ t.id }}">&#9998;</button>
+          <button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px" onclick="ajaxDelete('/monitor/template/delete/{{ t.id }}','montpl-{{ t.id }}',this)">&#10006;</button>
+        </td>
+      </tr>
+    {% endfor %}</tbody>
+  </table>
+
+  <div class="fw-bold small mb-2">2. Назначение шаблонов на IP-адреса (🟢 все ОК | 🟠 часть ОК | 🔴 недоступен | ⚪ в процессе)</div>
+  <table class="table table-sm small mb-0">
+    <thead><tr><th>IP Адрес</th><th>Объект</th><th>Шаблон</th><th>Статус</th><th>Ответ</th></tr></thead>
+    <tbody>{% for ip in ips if ip.status != 'Free' %}
+      <tr>
+        <td><strong>{{ ip.ip }}</strong></td>
+        <td class="text-muted">{{ ip.assigned_label }}</td>
+        <td>
+          <form action="/monitor/assign" method="post" class="d-flex gap-1">
+            <input type="hidden" name="ip_id" value="{{ ip.id }}">
+            <select name="template_id" class="form-select form-select-sm" style="max-width:190px" onchange="this.form.requestSubmit()">
+              <option value="">-- Отключен --</option>
+              {% for t in mon_templates %}<option value="{{ t.id }}" {% if ip.mon_assign and ip.mon_assign.overall_state!='disabled' and ip.mon_assign.template_id==t.id %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+            </select>
+            
+          </form>
+        </td>
+        {% set a = ip.mon_assign %}
+        <td id="assign-st-{{ a.id if a else 'none' }}">
+          {% if a and a.overall_state != 'disabled' %}<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:{{ '#198754' if a.overall_state=='green' else ('#fd7e14' if a.overall_state=='orange' else ('#dc3545' if a.overall_state=='red' else '#adb5bd')) }};"></span>{% else %}<span class="text-muted">—</span>{% endif %}
+        </td>
+        <td id="assign-det-{{ a.id if a else 'none' }}">{{ a.last_detail if a else '' }}</td>
+      </tr>
+    {% endfor %}</tbody>
+  </table>
+</div></div></div><div class="col-12"><div class="card"><div class="card-header bg-dark text-white">📚 Справочники (Настраиваемые типы и статусы)</div><div class="card-body"><div class="row g-2">
+{% for ck, ct in cat_labels.items() %}<div class="col-md-3"><div class="border rounded p-2 bg-white h-100"><div class="fw-bold small mb-1">{{ ct }}</div>
+<form action="/options/add" method="post" class="input-group input-group-sm mb-2"><input type="hidden" name="category" value="{{ ck }}">['<input name="value" class="form-control form-control-sm" placeholder="Новое..." required>']<button type="submit" class="btn btn-outline-primary" title="Нажмите Enter или OK для сохранения">OK</button></form>
+<table class="table table-sm small mb-0">{% for o in opts[ck] %}<tr id="row-option-{{ o.id }}"><td>{{ o.value }}</td><td class="text-end" style="white-space:nowrap"><button type="button" class="btn btn-xs btn-outline-secondary py-0 px-1" data-bs-toggle="modal" data-bs-target="#eopt{{ o.id }}">&#9998;</button><button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px" onclick="ajaxDelete('/delete/option/{{ o.id }}','option-{{ o.id }}',this)">&#10006;</button></td></tr>{% endfor %}</table>
+</div></div>{% endfor %}</div></div></div></div>
+  <div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">🔑 API Токены (Режим: {{ 'Включён' if auth_enabled else 'Открытый (без токена)' }})</div><div class="card-body">
+    <form action="/tokens/create" method="post" class="input-group input-group-sm mb-2">['<input name="name" class="form-control form-control-sm" placeholder="Название токена (Ansible / MCP)" required>']<button type="submit" class="btn btn-outline-primary" title="Нажмите Enter или OK для сохранения">OK</button></form>
+    <table class="table table-sm small mb-0">{% for t in tokens %}<tr id="row-token-{{ t.id }}"><td>{{ t.name }}</td><td><code>{{ t.token }}</code></td><td>{{ 'Активен' if t.is_active else 'Отключен' }}</td>
+    <td class="text-end"><form action="/tokens/toggle/{{ t.id }}" method="post" class="d-inline"><button class="btn btn-xs btn-outline-secondary py-0">⏯</button></form> <button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/tokens/delete/{{ t.id }}', 'token-{{ t.id }}', this)">&#10006;</button></td></tr>{% endfor %}</table>
+  </div></div></div>
+
+  <div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">📍 Локации и Стойки</div><div class="card-body">
+    <form action="/add/location" method="post" class="row g-1 mb-2"><div class="col-5"><input name="name" class="form-control form-control-sm" placeholder="Локация" required></div><div class="col-5"><input name="address" class="form-control form-control-sm" placeholder="Адрес"></div><div class="col-2"><button class="btn btn-primary btn-sm w-100">+Лок</button></div></form>
+    <form action="/add/rack" method="post" class="row g-1 mb-2"><div class="col-4"><select name="location_id" class="form-select form-select-sm">{% for l in locations %}<option value="{{ l.id }}">{{ l.name }}</option>{% endfor %}</select></div><div class="col-4"><input name="name" class="form-control form-control-sm" placeholder="Стойка" required></div><div class="col-2"><input type="number" name="units" value="42" class="form-control form-control-sm"></div><div class="col-2"><button class="btn btn-success btn-sm w-100">+Ст</button></div></form>
+    <table class="table table-sm small mb-0">{% for l in locations %}<tr id="row-location-{{ l.id }}"><td><strong>{{ l.name }}</strong></td><td class="text-end"><button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/delete/location/{{ l.id }}', 'location-{{ l.id }}', this)">&#10006;</button></td></tr>
+    {% for r in l.racks %}<tr id="row-rack-{{ r.id }}"><td>↳ {{ r.name }} ({{ r.units }}U)</td><td class="text-end"><button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/delete/rack/{{ r.id }}', 'rack-{{ r.id }}', this)">&#10006;</button></td></tr>{% endfor %}{% endfor %}</table>
+  </div></div></div>
+
+  <div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">🖥️ Оборудование</div><div class="card-body">
+    <form action="/add/device" method="post" class="row g-1 mb-2"><div class="col-3"><select name="rack_id" class="form-select form-select-sm">{% for r in racks %}<option value="{{ r.id }}">{{ r.location.name }}/{{ r.name }}</option>{% endfor %}</select></div><div class="col-3"><input name="hostname" class="form-control form-control-sm" placeholder="pve-host03" required></div><div class="col-2"><select name="device_type" class="form-select form-select-sm">{% for o in opts['device_type'] %}<option value="{{ o.value }}">{{ o.value }}</option>{% endfor %}</select></div><div class="col-2"><input type="number" name="u_position" class="form-control form-control-sm" placeholder="U" required></div><div class="col-2"><button class="btn btn-primary btn-sm w-100">+</button></div></form>
+    <table class="table table-sm small mb-0">{% for d in devices %}<tr id="row-device-{{ d.id }}"><td>{{ d.rack.location.name }}/{{ d.rack.name }} U{{ d.u_position }}</td><td><strong>{{ d.hostname }}</strong> ({{ d.device_type }})</td><td>{{ d.status }}</td><td class="text-end"><button class="btn btn-xs btn-outline-secondary py-0" data-bs-toggle="modal" data-bs-target="#ed{{ d.id }}">✎</button> <button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/delete/device/{{ d.id }}', 'device-{{ d.id }}', this)">&#10006;</button></td></tr>{% endfor %}</table>
+  </div></div></div>
+
+  <div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">📦 Гипервизоры и ВМ</div><div class="card-body">
+    <form action="/add/hv_type" method="post" class="input-group input-group-sm mb-2">['<input name="name" class="form-control form-control-sm" placeholder="Новый тип гипервизора">']<button type="submit" class="btn btn-outline-primary" title="Нажмите Enter или OK для сохранения">OK</button></form>
+    <form action="/add/hypervisor" method="post" class="row g-1 mb-2"><div class="col-3"><select name="parent_target" class="form-select form-select-sm">{% for d in devices %}<option value="dev:{{ d.id }}">{{ d.hostname }}</option>{% endfor %}{% for h in hvs %}<option value="hv:{{ h.id }}">HV:{{ h.name }}</option>{% endfor %}</select></div><div class="col-3"><input name="name" class="form-control form-control-sm" placeholder="Имя HV" required></div><div class="col-2"><input name="hostname" class="form-control form-control-sm" placeholder="Host" required></div><div class="col-2"><select name="hv_type" class="form-select form-select-sm">{% for o in opts['hv_type'] %}<option value="{{ o.value }}">{{ o.value }}</option>{% endfor %}</select></div><div class="col-2"><button class="btn btn-primary btn-sm w-100">+HV</button></div></form>
+    <form action="/add/vm" method="post" class="row g-1 mb-2"><div class="col-4"><select name="hypervisor_id" class="form-select form-select-sm">{% for h in hvs %}<option value="{{ h.id }}">{{ h.name }}</option>{% endfor %}</select></div><div class="col-4"><input name="hostname" class="form-control form-control-sm" placeholder="Имя ВМ" required></div><div class="col-2"><select name="vm_type" class="form-select form-select-sm">{% for o in opts['vm_type'] %}<option value="{{ o.value }}">{{ o.value }}</option>{% endfor %}</select></div><div class="col-2"><button class="btn btn-success btn-sm w-100">+ВМ</button></div></form>
+    <table class="table table-sm small mb-0">{% for h in hvs %}<tr id="row-hypervisor-{{ h.id }}" class="table-light"><td><strong>{{ h.name }}</strong> ({{ h.hv_type }})</td><td>{{ h.get_chain() }}</td><td class="text-end"><button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/delete/hypervisor/{{ h.id }}', 'hypervisor-{{ h.id }}', this)">&#10006;</button></td></tr>{% endfor %}
+    {% for v in vms %}<tr id="row-vm-{{ v.id }}"><td>↳ {{ v.hostname }} ({{ v.vm_type }})</td><td>на {{ v.hypervisor.name }}</td><td class="text-end"><button class="btn btn-xs btn-outline-secondary py-0" data-bs-toggle="modal" data-bs-target="#ev{{ v.id }}">✎</button> <button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/delete/vm/{{ v.id }}', 'vm-{{ v.id }}', this)">&#10006;</button></td></tr>{% endfor %}</table>
+  </div></div></div>
+
+  <div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">🔒 VPN (L2 / L3) и VLAN / vSwitch</div><div class="card-body">
+    <form action="/add/vpn_type" method="post" class="input-group input-group-sm mb-2">['<input name="name" class="form-control form-control-sm" placeholder="Новый тип VPN">']<button type="submit" class="btn btn-outline-primary" title="Нажмите Enter или OK для сохранения">OK</button></form>
+    <form action="/add/vpn" method="post" class="row g-1 mb-2"><div class="col-3"><input name="name" class="form-control form-control-sm" placeholder="wg-msk" required></div><div class="col-2"><select name="vpn_type" class="form-select form-select-sm">{% for o in opts['vpn_type'] %}<option value="{{ o.value }}">{{ o.value }}</option>{% endfor %}</select></div><div class="col-2"><select name="layer" class="form-select form-select-sm">{% for o in opts['vpn_layer'] %}<option value="{{ o.value }}">{{ o.value }}</option>{% endfor %}</select></div><div class="col-3"><input name="endpoint_a" class="form-control form-control-sm" placeholder="Peer A"></div><div class="col-2"><button class="btn btn-primary btn-sm w-100">+VPN</button></div></form>
+    <table class="table table-sm small mb-0">{% for v in vpns %}<tr id="row-vpn-{{ v.id }}"><td><strong>{{ v.name }}</strong></td><td>{{ v.vpn_type }} ({{ v.layer }})</td><td>{{ v.endpoint_a }}</td><td class="text-end"><button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/delete/vpn/{{ v.id }}', 'vpn-{{ v.id }}', this)">&#10006;</button></td></tr>{% endfor %}</table>
+  </div></div></div>
+
+  <div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">🔢 IP-пространство</div><div class="card-body">
+    <form action="/add/subnet" method="post" class="input-group input-group-sm mb-2">['<input name="cidr" class="form-control form-control-sm" placeholder="10.0.0.0/29" required>']<button type="submit" class="btn btn-outline-primary" title="Нажмите Enter или OK для сохранения">OK</button></form>
+    <table class="table table-sm small mb-0">{% for ip in ips %}<tr id="row-ip-{{ ip.id }}"><td>{% set b = ip_badge(ip, mon_settings.enabled) %}<span class="mon-dot" data-ip-id="{{ ip.id }}" style="display:{{ 'inline-block' if b else 'none' }};width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle;background-color:{{ b.color if b else '#adb5bd' }};" title="{{ b.tooltip if b else '' }}"></span><strong>{{ ip.ip }}</strong></td><td>{{ ip.status }}</td>
+    <td><form action="/assign_ip/{{ ip.id }}" method="post" class="d-flex gap-1"><select name="target" class="form-select form-select-sm" onchange="this.form.requestSubmit()"><option value="">-- Свободен --</option>{% for d in devices %}<option value="dev:{{ d.id }}" {% if ip.device_id==d.id %}selected{% endif %}>{{ d.hostname }}</option>{% endfor %}{% for h in hvs %}<option value="hv:{{ h.id }}" {% if ip.hypervisor_id==h.id %}selected{% endif %}>HV:{{ h.name }}</option>{% endfor %}{% for v in vms %}<option value="vm:{{ v.id }}" {% if ip.vm_id==v.id %}selected{% endif %}>VM:{{ v.hostname }}</option>{% endfor %}{% for vp in vpns %}<option value="vpn:{{ vp.id }}" {% if ip.vpn_id==vp.id %}selected{% endif %}>VPN:{{ vp.name }}</option>{% endfor %}</select></form></td>
+    <td class="text-end"><button type="button" style="color:#dc3545;background:none;border:none;cursor:pointer;font-weight:bold;padding:0 4px;" onclick="ajaxDelete('/delete/ip/{{ ip.id }}', 'ip-{{ ip.id }}', this)">&#10006;</button></td></tr>{% endfor %}</table>
+  </div></div></div>
+</div>
+
+{% for d in devices %}<div class="modal fade" id="ed{{ d.id }}"><div class="modal-dialog"><form action="/edit/device/{{ d.id }}" method="post" class="modal-content"><div class="modal-body"><select name="rack_id" class="form-select form-select-sm mb-2">{% for r in racks %}<option value="{{ r.id }}" {% if r.id==d.rack_id %}selected{% endif %}>{{ r.location.name }}/{{ r.name }}</option>{% endfor %}</select><input type="number" name="u_position" value="{{ d.u_position }}" class="form-control form-control-sm mb-2"><input name="hostname" value="{{ d.hostname }}" class="form-control form-control-sm mb-2"><select name="device_type" class="form-select form-select-sm mb-2">{% for o in opts['device_type'] %}<option value="{{ o.value }}" {% if o.value==d.device_type %}selected{% endif %}>{{ o.value }}</option>{% endfor %}</select><select name="status" class="form-select form-select-sm">{% for o in opts['status'] %}<option value="{{ o.value }}" {% if o.value==d.status %}selected{% endif %}>{{ o.value }}</option>{% endfor %}</select></div><div class="modal-footer"><button class="btn btn-primary btn-sm">Сохранить</button></div></form></div></div>{% endfor %}
+{% for v in vms %}<div class="modal fade" id="ev{{ v.id }}"><div class="modal-dialog"><form action="/edit/vm/{{ v.id }}" method="post" class="modal-content"><div class="modal-body"><select name="hypervisor_id" class="form-select form-select-sm mb-2">{% for h in hvs %}<option value="{{ h.id }}" {% if v.hypervisor_id==h.id %}selected{% endif %}>{{ h.name }}</option>{% endfor %}</select><input name="hostname" value="{{ v.hostname }}" class="form-control form-control-sm mb-2"><select name="vm_type" class="form-select form-select-sm mb-2">{% for o in opts['vm_type'] %}<option value="{{ o.value }}" {% if o.value==v.vm_type %}selected{% endif %}>{{ o.value }}</option>{% endfor %}</select><select name="status" class="form-select form-select-sm">{% for o in opts['status'] %}<option value="{{ o.value }}" {% if o.value==v.status %}selected{% endif %}>{{ o.value }}</option>{% endfor %}</select></div><div class="modal-footer"><button class="btn btn-primary btn-sm">Сохранить</button></div></form></div></div>{% endfor %}
+</div><script>
+async function ajaxDelete(url, domKey, btn) {
+  const sx = window.scrollX, sy = window.scrollY;
+  const row = document.getElementById('row-' + domKey);
+  const nextRow = row ? (row.nextElementSibling || row.previousElementSibling) : null;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(url, {
+      method: 'DELETE',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const keys = (data.removed && data.removed.length) ? data.removed : [domKey];
+    keys.forEach(function(k) {
+      const el = document.getElementById('row-' + k);
+      if (el) {
+        el.style.opacity = '0';
+        el.style.transition = 'opacity .15s';
+        setTimeout(function() { el.remove(); }, 150);
+      }
+    });
+    if (nextRow) {
+      const target = nextRow.querySelector('button, a, select, input');
+      if (target) target.focus({ preventScroll: true });
+    }
+    window.scrollTo(sx, sy);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert('Ошибка удаления: ' + e.message);
+  }
+}
+</script>
+<script id="full-ajax-script">
+document.addEventListener('submit', async function(e) {
+  const form = e.target;
+  if (!form || form.tagName !== 'FORM') return;
+
+  // Игнорируем формы с методом GET (например, фильтры)
+  const method = (form.getAttribute('method') || 'GET').toUpperCase();
+  if (method === 'GET') return;
+
+  e.preventDefault();
+
+  const sx = window.scrollX;
+  const sy = window.scrollY;
+  const activeId = document.activeElement ? document.activeElement.id : null;
+  const submitBtn = form.querySelector('button[type="submit"], button:not([type])');
+  if (submitBtn) submitBtn.disabled = true;
+
+  // Если форма внутри модального окна Bootstrap — закрываем его
+  const modalEl = form.closest('.modal');
+  if (modalEl && window.bootstrap) {
+    const modalInst = bootstrap.Modal.getInstance(modalEl);
+    if (modalInst) modalInst.hide();
+  }
+
+  try {
+    const formData = new FormData(form);
+    const resp = await fetch(form.action, {
+      method: method,
+      body: formData,
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+    // Получаем обновлённую разметку и подменяем только основной контейнер
+    const htmlText = await resp.text();
+    const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+    const newContainer = doc.querySelector('.container-fluid, .container');
+    const curContainer = document.querySelector('.container-fluid, .container');
+
+    if (newContainer && curContainer) {
+      // Убираем оставшиеся затемнения от модальных окон
+      document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+      document.body.classList.remove('modal-open');
+      document.body.style.removeProperty('overflow');
+      document.body.style.removeProperty('padding-right');
+
+      curContainer.innerHTML = newContainer.innerHTML;
+    }
+
+    window.scrollTo(sx, sy);
+    if (activeId) {
+      const restored = document.getElementById(activeId);
+      if (restored) restored.focus({ preventScroll: true });
+    }
+  } catch (err) {
+    if (submitBtn) submitBtn.disabled = false;
+    alert('Ошибка выполнения действия: ' + err.message);
+  }
+});
+</script>
+{% for ck, items in opts.items() %}{% for o in items %}<div class="modal fade" id="eopt{{ o.id }}"><div class="modal-dialog"><form action="/options/edit/{{ o.id }}" method="post" class="input-group input-group-sm mb-2">['<input name="value" value="{{ o.value }}" class="form-control form-control-sm" required>']<button type="submit" class="btn btn-outline-primary" title="Нажмите Enter или OK для сохранения">OK</button></form></div></div>{% endfor %}{% endfor %}<script id="sidebar-tabs-script">
+function initConfigSidebar() {
+  const mainRow = document.querySelector('.container-fluid > .row.g-3');
+  if (!mainRow || document.getElementById('cfg-sidebar')) return;
+
+  const cols = Array.from(mainRow.children).filter(el => el.classList.contains('col-12') || el.classList.contains('col-md-6'));
+  if (!cols.length) return;
+
+  // Создаём макет: слева сайдбар, справа контент
+  const layout = document.createElement('div');
+  layout.className = 'row g-3';
+  layout.innerHTML = `
+    <div class="col-md-3 col-lg-2" id="cfg-sidebar">
+      <div class="list-group shadow-sm sticky-top" style="top: 15px;" id="cfg-nav"></div>
+    </div>
+    <div class="col-md-9 col-lg-10" id="cfg-content"></div>
+  `;
+
+  mainRow.parentNode.insertBefore(layout, mainRow);
+  const nav = layout.querySelector('#cfg-nav');
+  const content = layout.querySelector('#cfg-content');
+  const savedIdx = parseInt(localStorage.getItem('ipam_cfg_tab') || '0', 10);
+
+  cols.forEach((col, idx) => {
+    const header = col.querySelector('.card-header');
+    let title = header ? header.textContent.trim() : ('Раздел ' + (idx + 1));
+    // Укорачиваем длинный заголовок токенов для меню
+    if (title.includes('API Токены')) title = '🔑 API Токены';
+    if (title.includes('Справочники')) title = '📚 Справочники';
+
+    col.className = 'cfg-pane';
+    col.dataset.tabIdx = idx;
+    content.appendChild(col);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'list-group-item list-group-item-action py-2 px-3 small fw-semibold';
+    btn.textContent = title;
+    btn.dataset.tabIdx = idx;
+    btn.onclick = () => activateTab(idx);
+    nav.appendChild(btn);
+  });
+
+  mainRow.remove();
+
+  function activateTab(activeIdx) {
+    const targetIdx = (activeIdx >= 0 && activeIdx < cols.length) ? activeIdx : 0;
+    localStorage.setItem('ipam_cfg_tab', targetIdx);
+    nav.querySelectorAll('button').forEach(b => {
+      b.classList.toggle('active', parseInt(b.dataset.tabIdx, 10) === targetIdx);
+    });
+    content.querySelectorAll('.cfg-pane').forEach(p => {
+      p.style.display = (parseInt(p.dataset.tabIdx, 10) === targetIdx) ? '' : 'none';
+    });
+  }
+
+  activateTab(savedIdx);
+}
+
+document.addEventListener('DOMContentLoaded', initConfigSidebar);
+// Повторная инициализация после AJAX-обновления контейнера
+const observer = new MutationObserver(() => initConfigSidebar());
+document.addEventListener('DOMContentLoaded', () => {
+  const c = document.querySelector('.container-fluid');
+  if (c) observer.observe(c, { childList: true });
+});
+</script>
+<style id="ipam-theme-styles">
+/* --- ТЁМНАЯ ТЕМА --- */
+body.theme-dark {
+  background-color: #121417 !important;
+  color: #e4e6eb !important;
+}
+body.theme-dark .card,
+body.theme-dark .modal-content,
+body.theme-dark .list-group-item,
+body.theme-dark .border.rounded.bg-white {
+  background-color: #1c1f24 !important;
+  color: #e4e6eb !important;
+  border-color: #2f353d !important;
+}
+body.theme-dark .card-header.bg-dark {
+  background-color: #0d0f12 !important;
+  border-bottom: 1px solid #2f353d !important;
+}
+body.theme-dark .table {
+  --bs-table-bg: transparent;
+  --bs-table-color: #e4e6eb;
+  --bs-table-border-color: #2f353d;
+  color: #e4e6eb !important;
+}
+body.theme-dark .table-light {
+  --bs-table-bg: #252930 !important;
+  --bs-table-color: #ffffff !important;
+}
+body.theme-dark .form-control,
+body.theme-dark .form-select {
+  background-color: #14171a !important;
+  color: #e4e6eb !important;
+  border-color: #383e47 !important;
+}
+body.theme-dark .list-group-item-action:hover {
+  background-color: #272b33 !important;
+}
+body.theme-dark .list-group-item.active {
+  background-color: #0d6efd !important;
+  border-color: #0d6efd !important;
+}
+
+/* --- ХАКЕРСКАЯ ТЕМА (Мягкий контраст + Menlo/Meslo/Nerd) --- */
+body.theme-hacker {
+  background-color: #0a0e0b !important;
+  color: #4db870 !important;
+  font-family: 'MesloLGS NF', 'Meslo LG S', 'Meslo LG M', 'Menlo', 'Symbols Nerd Font', 'FiraCode Nerd Font', monospace !important;
+  background-image: linear-gradient(rgba(77, 184, 112, 0.02) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(77, 184, 112, 0.02) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+body.theme-hacker .card,
+body.theme-hacker .modal-content,
+body.theme-hacker .list-group-item,
+body.theme-hacker .border.rounded.bg-white {
+  background-color: #0f1511 !important;
+  color: #4db870 !important;
+  border: 1px solid #1d3b26 !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35) !important;
+  border-radius: 3px !important;
+}
+body.theme-hacker .card-header.bg-dark {
+  background-color: #0c120e !important;
+  color: #63c984 !important;
+  border-bottom: 1px solid #1d3b26 !important;
+  letter-spacing: 0.4px;
+}
+body.theme-hacker .table {
+  --bs-table-bg: transparent;
+  --bs-table-color: #4db870;
+  --bs-table-border-color: #183020;
+  color: #4db870 !important;
+}
+body.theme-hacker .table-light {
+  --bs-table-bg: #131c16 !important;
+  --bs-table-color: #68cf89 !important;
+}
+body.theme-hacker .form-control,
+body.theme-hacker .form-select {
+  background-color: #080c09 !important;
+  color: #5cc47e !important;
+  border: 1px solid #1f3d28 !important;
+  border-radius: 3px !important;
+}
+body.theme-hacker .form-control::placeholder {
+  color: #2c5c3c !important;
+}
+body.theme-hacker .btn {
+  border-radius: 3px !important;
+}
+body.theme-hacker .btn-primary,
+body.theme-hacker .btn-success,
+body.theme-hacker .btn-dark {
+  background-color: #13291b !important;
+  border-color: #2b5c3b !important;
+  color: #63c984 !important;
+}
+body.theme-hacker .btn-primary:hover,
+body.theme-hacker .btn-success:hover,
+body.theme-hacker .btn-dark:hover {
+  background-color: #1d4029 !important;
+  border-color: #4db870 !important;
+  color: #8ee6aa !important;
+}
+body.theme-hacker .list-group-item-action:hover {
+  background-color: #141f18 !important;
+}
+body.theme-hacker .list-group-item.active {
+  background-color: #142b1c !important;
+  border-color: #2f6641 !important;
+  color: #75db96 !important;
+  box-shadow: inset 3px 0 0 #4db870 !important;
+}
+body.theme-hacker code,
+body.theme-hacker .text-muted {
+  color: #3a8f56 !important;
+}
+body.theme-hacker .badge.bg-success,
+body.theme-hacker .badge.bg-primary,
+body.theme-hacker .badge.bg-secondary {
+  background-color: #183622 !important;
+  color: #6fd490 !important;
+  border: 1px solid #285738;
+}
+
+/* Деликатный, едва заметный глитч */
+@keyframes subtle-glitch {
+  0%, 93%, 100% {
+    text-shadow: none;
+    transform: translate(0, 0);
+  }
+  94% {
+    text-shadow: -1px 0 rgba(200, 70, 100, 0.45), 1px 0 rgba(70, 180, 200, 0.45);
+    transform: translate(0.6px, 0);
+  }
+  95% {
+    text-shadow: 1px 0 rgba(200, 70, 100, 0.45), -1px 0 rgba(70, 180, 200, 0.45);
+    transform: translate(-0.6px, 0);
+  }
+  96% {
+    text-shadow: none;
+    transform: translate(0, 0);
+  }
+}
+body.theme-hacker h4,
+body.theme-hacker .card-header {
+  animation: subtle-glitch 8s infinite;
+}
+</style>
+
+<script id="ipam-theme-script">
+const THEMES = [
+  { id: 'light', label: '☀️ Светлая' },
+  { id: 'dark', label: '🌙 Тёмная' },
+  { id: 'hacker', label: '👾 Хакерская' }
+];
+
+function applyTheme(themeId) {
+  document.body.classList.remove('theme-light', 'theme-dark', 'theme-hacker');
+  document.body.classList.add('theme-' + themeId);
+  localStorage.setItem('ipam_theme', themeId);
+  const btn = document.getElementById('theme-toggle-btn');
+  const current = THEMES.find(t => t.id === themeId) || THEMES;
+  if (btn) btn.textContent = current.label;
+}
+
+function cycleTheme() {
+  const cur = localStorage.getItem('ipam_theme') || 'light';
+  const idx = THEMES.findIndex(t => t.id === cur);
+  const next = THEMES[(idx + 1) % THEMES.length];
+  applyTheme(next.id);
+}
+
+function injectThemeButton() {
+  const saved = localStorage.getItem('ipam_theme') || 'light';
+  applyTheme(saved);
+  if (document.getElementById('theme-toggle-btn')) return;
+
+  const headerFlex = document.querySelector('.container-fluid > .d-flex, .container > .d-flex');
+  if (!headerFlex) return;
+
+  let btnGroup = headerFlex.querySelector('.d-flex.gap-2');
+  const navLink = headerFlex.querySelector('a.btn');
+  if (!btnGroup && navLink) {
+    btnGroup = document.createElement('div');
+    btnGroup.className = 'd-flex gap-2';
+    navLink.parentNode.insertBefore(btnGroup, navLink);
+    btnGroup.appendChild(navLink);
+  }
+  if (btnGroup) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'theme-toggle-btn';
+    btn.className = 'btn btn-outline-secondary btn-sm';
+    btn.onclick = cycleTheme;
+    const current = THEMES.find(t => t.id === saved) || THEMES;
+    btn.textContent = current.label;
+    btnGroup.insertBefore(btn, btnGroup.firstChild);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', injectThemeButton);
+const themeObserver = new MutationObserver(() => injectThemeButton());
+document.addEventListener('DOMContentLoaded', () => {
+  const c = document.querySelector('.container-fluid, .container');
+  if (c) themeObserver.observe(c, { childList: true });
+});
+</script>
+
+<script id="ipam-monitor-script">
+async function refreshMonitorDots() {
+  try {
+    const r = await fetch('/api/v1/monitor/statuses', { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    document.querySelectorAll('.mon-dot').forEach(dot => {
+      const id = dot.dataset.ipId;
+      if (!data.enabled || !data.statuses[id]) {
+        dot.style.display = 'none';
+      } else {
+        const info = data.statuses[id];
+        dot.style.display = 'inline-block';
+        dot.style.backgroundColor = info.color;
+        dot.title = info.tooltip;
+      }
+    });
+    if (data.assigns) {
+      Object.entries(data.assigns).forEach(([aid, ainfo]) => {
+        const stCell = document.getElementById('assign-st-' + aid);
+        const detCell = document.getElementById('assign-det-' + aid);
+        if (stCell) stCell.innerHTML = `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:${ainfo.color};"></span>`;
+        if (detCell) detCell.textContent = ainfo.detail;
+      });
+    }
+    if (false && data.rules) {
+      Object.entries(data.rules).forEach(([rid, rinfo]) => {
+        const row = document.getElementById('row-monrule-' + rid);
+        if (row && row.cells.length >= 4) {
+          row.cells.innerHTML = `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:${rinfo.color};margin-right:4px;"></span> ${rinfo.state}`;
+          row.cells.textContent = rinfo.detail;
+        }
+      });
+    }
+  } catch (e) {}
+}
+document.addEventListener('DOMContentLoaded', refreshMonitorDots);
+setInterval(refreshMonitorDots, 3000);
+</script>
+{% for t in mon_templates %}
+<div class="modal fade" id="emtpl{{ t.id }}"><div class="modal-dialog"><form action="/monitor/template/edit/{{ t.id }}" method="post" class="modal-content">
+  <div class="modal-header py-2"><h6 class="modal-title">Шаблон: {{ t.name }}</h6></div>
+  <div class="modal-body">
+    <label class="small">Название</label><input name="name" value="{{ t.name }}" class="form-control form-control-sm mb-2" required>
+    <label class="small">Проверки (ICMP, TCP:PORT)</label><input name="checks" value="{{ t.checks }}" class="form-control form-control-sm mb-2" required>
+    <div class="row g-2">
+      <div class="col-4"><label class="small">Online (сек)</label><input type="number" min="1" name="interval_ok" value="{{ t.interval_ok }}" class="form-control form-control-sm"></div>
+      <div class="col-4"><label class="small">Fail (сек)</label><input type="number" min="1" name="interval_fail" value="{{ t.interval_fail }}" class="form-control form-control-sm"></div>
+      <div class="col-4"><label class="small">Таймаут (сек)</label><input type="number" step="0.1" min="0.3" name="timeout_sec" value="{{ t.timeout_sec }}" class="form-control form-control-sm"></div>
+    </div>
+  </div>
+  <div class="modal-footer py-1"><button class="btn btn-primary btn-sm">Сохранить</button></div>
+</form></div></div>
+{% endfor %}
+</body></html>
