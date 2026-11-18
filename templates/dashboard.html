@@ -1,0 +1,357 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><title>Mini IPAM {{ version }}</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="bg-light"><div class="container-fluid py-3 px-4">
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4>🌐 Mini IPAM & DCIM <span class="badge bg-secondary">{{ version }}</span></h4>
+  <div class="d-flex gap-2"><button type="button" id="toggle-dash-mode" class="btn btn-outline-secondary btn-sm" onclick="toggleDashMode()">📑 Вид: Сайдбар</button><a href="/config" class="btn btn-dark btn-sm">⚙️ Конфигурация и Токены</a></div>
+</div>
+<form method="get" class="card card-body shadow-sm mb-3"><div class="row g-2">
+  <div class="col-md-3"><select name="status" class="form-select form-select-sm">
+    {% for s in opts['status'] %}<option value="{{ s.value }}" {% if status_filter==s.value %}selected{% endif %}>{{ s.value }}</option>{% endfor %}
+    <option value="ALL" {% if status_filter=='ALL' %}selected{% endif %}>Все статусы</option>
+  </select></div>
+  <div class="col-md-3"><select name="location_id" class="form-select form-select-sm">
+    <option value="">Все локации</option>{% for l in locations %}<option value="{{ l.id }}" {% if loc_filter==l.id|string %}selected{% endif %}>{{ l.name }}</option>{% endfor %}
+  </select></div>
+  <div class="col-md-4"><input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="Поиск..."></div>
+  <div class="col-md-2"><button class="btn btn-primary btn-sm w-100">Фильтр</button></div>
+</div></form>
+<div class="row g-3">
+{% if devices %}<div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">🖥️ Оборудование ({{ devices|length }})</div><table class="table table-sm small mb-0">
+{% for d in devices %}<tr><td>{{ d.rack.location.name }}/{{ d.rack.name }} U{{ d.u_position }}</td><td><strong>{{ d.hostname }}</strong></td><td>{{ d.device_type }}</td><td><span class="badge bg-success">{{ d.status }}</span></td></tr>{% endfor %}
+</table></div></div>{% endif %}
+{% if hvs or vms %}<div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">📦 Дерево виртуализации</div><div class="card-body p-2 small">
+{% for h in hvs if not h.parent_hypervisor_id %}
+  <div><strong>📦 {{ h.name }}</strong> ({{ h.hv_type }}) — <em>{{ h.get_chain() }}</em></div>
+  {% for v in h.vms %}<div class="ps-4">└─ ☁️ <strong>{{ v.hostname }}</strong> ({{ v.vm_type }})</div>{% endfor %}
+  {% for ch in h.children %}<div class="ps-4">└─ 📦 <strong>{{ ch.name }}</strong> ({{ ch.hv_type }})
+    {% for cv in ch.vms %}<div class="ps-4">└─ ☁️ {{ cv.hostname }}</div>{% endfor %}
+  </div>{% endfor %}
+{% endfor %}
+</div></div></div>{% endif %}
+{% if vpns %}<div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">🔒 VPN Туннели ({{ vpns|length }})</div><table class="table table-sm small mb-0">
+{% for v in vpns %}<tr><td><strong>{{ v.name }}</strong></td><td>{{ v.vpn_type }} ({{ v.layer }})</td><td>{{ v.endpoint_a }} ↔ {{ v.endpoint_b }}</td></tr>{% endfor %}
+</table></div></div>{% endif %}
+{% if ips %}<div class="col-md-6"><div class="card"><div class="card-header bg-dark text-white">🔢 Занятые IP ({{ ips|length }})</div><table class="table table-sm small mb-0">
+{% for ip in ips %}<tr><td>{% set b = ip_badge(ip, mon_settings.enabled) %}<span class="mon-dot" data-ip-id="{{ ip.id }}" style="display:{{ 'inline-block' if b else 'none' }};width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle;background-color:{{ b.color if b else '#adb5bd' }};" title="{{ b.tooltip if b else '' }}"></span><strong>{{ ip.ip }}</strong></td><td>{{ ip.assigned_label }}</td><td>{{ ip.description or '' }}</td></tr>{% endfor %}
+</table></div></div>{% endif %}
+</div></div><script id="dash-mode-script">
+let dashMode = localStorage.getItem('ipam_dash_mode') || 'all';
+let dashActiveIdx = parseInt(localStorage.getItem('ipam_dash_tab') || '0', 10);
+
+function applyDashMode() {
+  const btn = document.getElementById('toggle-dash-mode');
+  const cardsRow = document.querySelector('.container-fluid > .row.g-3, .container > .row.g-3');
+  if (!cardsRow) return;
+
+  // Сохраняем оригинальные карточки при первом запуске
+  if (!window._origDashCards) {
+    window._origDashCards = Array.from(cardsRow.children).filter(el => el.querySelector('.card'));
+  }
+  const cards = window._origDashCards;
+  if (!cards.length) return;
+
+  if (btn) {
+    btn.textContent = (dashMode === 'sidebar') ? '⊞ Вид: Всё в одном' : '📑 Вид: Сайдбар';
+  }
+
+  // Удаляем временную обёртку сайдбара, если была
+  const existingWrap = document.getElementById('dash-sidebar-wrap');
+  if (existingWrap) existingWrap.remove();
+
+  if (dashMode === 'all') {
+    cardsRow.style.display = '';
+    cards.forEach(col => {
+      col.className = 'col-md-6';
+      col.style.display = '';
+      cardsRow.appendChild(col);
+    });
+  } else {
+    cardsRow.style.display = 'none';
+    const wrap = document.createElement('div');
+    wrap.id = 'dash-sidebar-wrap';
+    wrap.className = 'row g-3';
+    wrap.innerHTML = `
+      <div class="col-md-3 col-lg-2">
+        <div class="list-group shadow-sm sticky-top" style="top: 15px;" id="dash-nav"></div>
+      </div>
+      <div class="col-md-9 col-lg-10" id="dash-content"></div>
+    `;
+    cardsRow.parentNode.insertBefore(wrap, cardsRow.nextSibling);
+
+    const nav = wrap.querySelector('#dash-nav');
+    const content = wrap.querySelector('#dash-content');
+    if (dashActiveIdx < 0 || dashActiveIdx >= cards.length) dashActiveIdx = 0;
+
+    cards.forEach((col, idx) => {
+      const header = col.querySelector('.card-header');
+      const title = header ? header.textContent.trim() : ('Раздел ' + (idx + 1));
+
+      col.className = 'dash-pane';
+      col.style.display = (idx === dashActiveIdx) ? '' : 'none';
+      content.appendChild(col);
+
+      const itemBtn = document.createElement('button');
+      itemBtn.type = 'button';
+      itemBtn.className = 'list-group-item list-group-item-action py-2 px-3 small fw-semibold' + (idx === dashActiveIdx ? ' active' : '');
+      itemBtn.textContent = title;
+      itemBtn.onclick = () => {
+        dashActiveIdx = idx;
+        localStorage.setItem('ipam_dash_tab', idx);
+        nav.querySelectorAll('button').forEach((b, i) => b.classList.toggle('active', i === idx));
+        content.querySelectorAll('.dash-pane').forEach((p, i) => p.style.display = (i === idx) ? '' : 'none');
+      };
+      nav.appendChild(itemBtn);
+    });
+  }
+}
+
+function toggleDashMode() {
+  dashMode = (dashMode === 'all') ? 'sidebar' : 'all';
+  localStorage.setItem('ipam_dash_mode', dashMode);
+  applyDashMode();
+}
+
+document.addEventListener('DOMContentLoaded', applyDashMode);
+</script>
+<style id="ipam-theme-styles">
+/* --- ТЁМНАЯ ТЕМА --- */
+body.theme-dark {
+  background-color: #121417 !important;
+  color: #e4e6eb !important;
+}
+body.theme-dark .card,
+body.theme-dark .modal-content,
+body.theme-dark .list-group-item,
+body.theme-dark .border.rounded.bg-white {
+  background-color: #1c1f24 !important;
+  color: #e4e6eb !important;
+  border-color: #2f353d !important;
+}
+body.theme-dark .card-header.bg-dark {
+  background-color: #0d0f12 !important;
+  border-bottom: 1px solid #2f353d !important;
+}
+body.theme-dark .table {
+  --bs-table-bg: transparent;
+  --bs-table-color: #e4e6eb;
+  --bs-table-border-color: #2f353d;
+  color: #e4e6eb !important;
+}
+body.theme-dark .table-light {
+  --bs-table-bg: #252930 !important;
+  --bs-table-color: #ffffff !important;
+}
+body.theme-dark .form-control,
+body.theme-dark .form-select {
+  background-color: #14171a !important;
+  color: #e4e6eb !important;
+  border-color: #383e47 !important;
+}
+body.theme-dark .list-group-item-action:hover {
+  background-color: #272b33 !important;
+}
+body.theme-dark .list-group-item.active {
+  background-color: #0d6efd !important;
+  border-color: #0d6efd !important;
+}
+
+/* --- ХАКЕРСКАЯ ТЕМА (Мягкий контраст + Menlo/Meslo/Nerd) --- */
+body.theme-hacker {
+  background-color: #0a0e0b !important;
+  color: #4db870 !important;
+  font-family: 'MesloLGS NF', 'Meslo LG S', 'Meslo LG M', 'Menlo', 'Symbols Nerd Font', 'FiraCode Nerd Font', monospace !important;
+  background-image: linear-gradient(rgba(77, 184, 112, 0.02) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(77, 184, 112, 0.02) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+body.theme-hacker .card,
+body.theme-hacker .modal-content,
+body.theme-hacker .list-group-item,
+body.theme-hacker .border.rounded.bg-white {
+  background-color: #0f1511 !important;
+  color: #4db870 !important;
+  border: 1px solid #1d3b26 !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35) !important;
+  border-radius: 3px !important;
+}
+body.theme-hacker .card-header.bg-dark {
+  background-color: #0c120e !important;
+  color: #63c984 !important;
+  border-bottom: 1px solid #1d3b26 !important;
+  letter-spacing: 0.4px;
+}
+body.theme-hacker .table {
+  --bs-table-bg: transparent;
+  --bs-table-color: #4db870;
+  --bs-table-border-color: #183020;
+  color: #4db870 !important;
+}
+body.theme-hacker .table-light {
+  --bs-table-bg: #131c16 !important;
+  --bs-table-color: #68cf89 !important;
+}
+body.theme-hacker .form-control,
+body.theme-hacker .form-select {
+  background-color: #080c09 !important;
+  color: #5cc47e !important;
+  border: 1px solid #1f3d28 !important;
+  border-radius: 3px !important;
+}
+body.theme-hacker .form-control::placeholder {
+  color: #2c5c3c !important;
+}
+body.theme-hacker .btn {
+  border-radius: 3px !important;
+}
+body.theme-hacker .btn-primary,
+body.theme-hacker .btn-success,
+body.theme-hacker .btn-dark {
+  background-color: #13291b !important;
+  border-color: #2b5c3b !important;
+  color: #63c984 !important;
+}
+body.theme-hacker .btn-primary:hover,
+body.theme-hacker .btn-success:hover,
+body.theme-hacker .btn-dark:hover {
+  background-color: #1d4029 !important;
+  border-color: #4db870 !important;
+  color: #8ee6aa !important;
+}
+body.theme-hacker .list-group-item-action:hover {
+  background-color: #141f18 !important;
+}
+body.theme-hacker .list-group-item.active {
+  background-color: #142b1c !important;
+  border-color: #2f6641 !important;
+  color: #75db96 !important;
+  box-shadow: inset 3px 0 0 #4db870 !important;
+}
+body.theme-hacker code,
+body.theme-hacker .text-muted {
+  color: #3a8f56 !important;
+}
+body.theme-hacker .badge.bg-success,
+body.theme-hacker .badge.bg-primary,
+body.theme-hacker .badge.bg-secondary {
+  background-color: #183622 !important;
+  color: #6fd490 !important;
+  border: 1px solid #285738;
+}
+
+/* Деликатный, едва заметный глитч */
+@keyframes subtle-glitch {
+  0%, 93%, 100% {
+    text-shadow: none;
+    transform: translate(0, 0);
+  }
+  94% {
+    text-shadow: -1px 0 rgba(200, 70, 100, 0.45), 1px 0 rgba(70, 180, 200, 0.45);
+    transform: translate(0.6px, 0);
+  }
+  95% {
+    text-shadow: 1px 0 rgba(200, 70, 100, 0.45), -1px 0 rgba(70, 180, 200, 0.45);
+    transform: translate(-0.6px, 0);
+  }
+  96% {
+    text-shadow: none;
+    transform: translate(0, 0);
+  }
+}
+body.theme-hacker h4,
+body.theme-hacker .card-header {
+  animation: subtle-glitch 8s infinite;
+}
+</style>
+
+<script id="ipam-theme-script">
+const THEMES = [
+  { id: 'light', label: '☀️ Светлая' },
+  { id: 'dark', label: '🌙 Тёмная' },
+  { id: 'hacker', label: '👾 Хакерская' }
+];
+
+function applyTheme(themeId) {
+  document.body.classList.remove('theme-light', 'theme-dark', 'theme-hacker');
+  document.body.classList.add('theme-' + themeId);
+  localStorage.setItem('ipam_theme', themeId);
+  const btn = document.getElementById('theme-toggle-btn');
+  const current = THEMES.find(t => t.id === themeId) || THEMES;
+  if (btn) btn.textContent = current.label;
+}
+
+function cycleTheme() {
+  const cur = localStorage.getItem('ipam_theme') || 'light';
+  const idx = THEMES.findIndex(t => t.id === cur);
+  const next = THEMES[(idx + 1) % THEMES.length];
+  applyTheme(next.id);
+}
+
+function injectThemeButton() {
+  const saved = localStorage.getItem('ipam_theme') || 'light';
+  applyTheme(saved);
+  if (document.getElementById('theme-toggle-btn')) return;
+
+  const headerFlex = document.querySelector('.container-fluid > .d-flex, .container > .d-flex');
+  if (!headerFlex) return;
+
+  let btnGroup = headerFlex.querySelector('.d-flex.gap-2');
+  const navLink = headerFlex.querySelector('a.btn');
+  if (!btnGroup && navLink) {
+    btnGroup = document.createElement('div');
+    btnGroup.className = 'd-flex gap-2';
+    navLink.parentNode.insertBefore(btnGroup, navLink);
+    btnGroup.appendChild(navLink);
+  }
+  if (btnGroup) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'theme-toggle-btn';
+    btn.className = 'btn btn-outline-secondary btn-sm';
+    btn.onclick = cycleTheme;
+    const current = THEMES.find(t => t.id === saved) || THEMES;
+    btn.textContent = current.label;
+    btnGroup.insertBefore(btn, btnGroup.firstChild);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', injectThemeButton);
+const themeObserver = new MutationObserver(() => injectThemeButton());
+document.addEventListener('DOMContentLoaded', () => {
+  const c = document.querySelector('.container-fluid, .container');
+  if (c) themeObserver.observe(c, { childList: true });
+});
+</script>
+
+<script id="ipam-monitor-script">
+async function refreshMonitorDots() {
+  try {
+    const r = await fetch('/api/v1/monitor/statuses', { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    document.querySelectorAll('.mon-dot').forEach(dot => {
+      const id = dot.dataset.ipId;
+      if (!data.enabled || !data.statuses[id]) {
+        dot.style.display = 'none';
+      } else {
+        const info = data.statuses[id];
+        dot.style.display = 'inline-block';
+        dot.style.backgroundColor = info.color;
+        dot.title = info.tooltip;
+      }
+    });
+    if (data.rules) {
+      Object.entries(data.rules).forEach(([rid, rinfo]) => {
+        const row = document.getElementById('row-monrule-' + rid);
+        if (row && row.cells.length >= 4) {
+          row.cells.innerHTML = `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background-color:${rinfo.color};margin-right:4px;"></span> ${rinfo.state}`;
+          row.cells.textContent = rinfo.detail;
+        }
+      });
+    }
+  } catch (e) {}
+}
+document.addEventListener('DOMContentLoaded', refreshMonitorDots);
+setInterval(refreshMonitorDots, 3000);
+</script>
+</body></html>
